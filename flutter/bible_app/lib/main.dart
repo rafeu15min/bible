@@ -3,38 +3,40 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
-import 'package:visibility_detector/visibility_detector.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 // --- Modelos de Dados ---
 
-// Cada item da lista agora conhece o livro ao qual pertence.
+// Cada item da lista agora conhece o livro e capítulo ao qual pertence.
 abstract class ListItem {
   final int bookId;
   final String bookName;
-  ListItem(this.bookId, this.bookName);
+  final int chapterNumber;
+  ListItem(this.bookId, this.bookName, this.chapterNumber);
 }
 
 class BookMarker extends ListItem {
-  BookMarker(String bookName, int bookId) : super(bookId, bookName);
+  BookMarker(String bookName, int bookId) : super(bookId, bookName, 1);
 }
 
 class ChapterMarker extends ListItem {
-  final int chapterNumber;
-  ChapterMarker(this.chapterNumber, int bookId, String bookName)
-      : super(bookId, bookName);
+  ChapterMarker(int chapterNumber, int bookId, String bookName)
+      : super(bookId, bookName, chapterNumber);
 }
 
 class Verse extends ListItem {
   final String verseNumber;
   final String content;
-  Verse(this.verseNumber, this.content, int bookId, String bookName)
-      : super(bookId, bookName);
+  Verse(this.verseNumber, this.content, int bookId, String bookName,
+      int chapterNumber)
+      : super(bookId, bookName, chapterNumber);
 }
 
 class Book {
   final int id;
   final String name;
-  Book(this.id, this.name);
+  final int chapterCount;
+  Book(this.id, this.name, this.chapterCount);
 }
 
 // --- Classe Auxiliar do Banco de Dados ---
@@ -58,43 +60,51 @@ class DatabaseHelper {
             data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
         await File(path).writeAsBytes(bytes, flush: true);
       } catch (e) {
-        // Tratar erro em um app de produção (ex: logging)
+        // Tratar erro
       }
     }
     return await openDatabase(path, version: 1);
   }
 
-  // Busca todos os livros em ordem canônica
+  // Busca todos os livros com sua respectiva contagem de capítulos.
   Future<List<Book>> getAllBooks() async {
     final db = await instance.database;
-    final List<Map<String, dynamic>> maps =
-        await db.query('Book', orderBy: 'Id_book ASC');
+    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT b.Id_book, b.Name_book, COUNT(c.Id_chapter) as chapter_count
+      FROM Book b
+      LEFT JOIN Chapter c ON b.Id_book = c.Id_book
+      WHERE c.Number_chapter > 0
+      GROUP BY b.Id_book, b.Name_book
+      ORDER BY b.Id_book ASC
+    ''');
     return List.generate(maps.length, (i) {
       return Book(
         maps[i]['Id_book'],
         maps[i]['Name_book'],
+        maps[i]['chapter_count'],
       );
     });
   }
 
-  // Busca os versículos de um capítulo específico
-  Future<List<Map<String, dynamic>>> getVersesForChapter(
-      int bookId, int chapterNumber) async {
-    Database db = await instance.database;
+  // NOVO: Carrega toda a Bíblia de uma vez para a memória.
+  Future<List<Map<String, dynamic>>> loadAllBibleData() async {
+    final db = await instance.database;
     return await db.rawQuery('''
-      SELECT v.number_verse, v.content_verse
+      SELECT
+        b.Id_book, b.Name_book,
+        c.Number_chapter,
+        v.number_verse, v.content_verse
       FROM Verse v
       INNER JOIN Chapter c ON v.Id_chapter = c.Id_chapter
-      WHERE c.Id_book = ? AND c.Number_chapter = ?
-      ORDER BY CAST(v.number_verse AS INTEGER)
-    ''', [bookId, chapterNumber]);
+      INNER JOIN Book b ON c.Id_book = b.Id_book
+      WHERE c.Number_chapter > 0
+      ORDER BY b.Id_book ASC, c.Number_chapter ASC, CAST(v.number_verse AS INTEGER) ASC
+    ''');
   }
 }
 
 // --- Ponto de Entrada do Aplicativo ---
 void main() {
-  // Garante que o detector de visibilidade seja inicializado.
-  VisibilityDetectorController.instance.updateInterval = Duration.zero;
   runApp(const BibleApp());
 }
 
@@ -111,6 +121,8 @@ class BibleApp extends StatelessWidget {
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF1A237E),
           elevation: 4,
+          titleTextStyle: TextStyle(color: Colors.white70, fontSize: 20),
+          iconTheme: IconThemeData(color: Colors.white70),
         ),
       ),
       home: const BibleReaderScreen(),
@@ -128,135 +140,137 @@ class BibleReaderScreen extends StatefulWidget {
 }
 
 class BibleReaderScreenState extends State<BibleReaderScreen> {
-  final ScrollController _scrollController = ScrollController();
+  final ItemScrollController _itemScrollController = ItemScrollController();
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
 
+  late Future<bool> _initializationFuture;
   List<Book> _allBooks = [];
   final List<ListItem> _displayItems = [];
+  final Map<String, int> _chapterIndexMap = {};
 
-  bool _isLoading = false;
-  bool _isInitialized = false;
   String _appBarTitle = 'Bíblia';
-  int _currentAppBarBookId = 0;
-
-  // NOVO: Conjunto para rastrear os índices de TODOS os itens visíveis.
-  final Set<int> _visibleItemIndices = {};
-
-  // Rastreia o último capítulo carregado para saber qual será o próximo.
-  MapEntry<int, int> _lastLoadedChapter = const MapEntry(0, 0);
+  String _bottomBarText = 'Gênesis: 1';
 
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(_onScroll);
-    _initialize();
+    _itemPositionsListener.itemPositions.addListener(_updateUIFromScroll);
+    _initializationFuture = _initializeAndBuildList();
   }
 
   @override
   void dispose() {
-    _scrollController.removeListener(_onScroll);
-    _scrollController.dispose();
+    _itemPositionsListener.itemPositions.removeListener(_updateUIFromScroll);
     super.dispose();
   }
 
-  Future<void> _initialize() async {
+  // LÓGICA ATUALIZADA: Carrega e processa tudo de uma vez.
+  Future<bool> _initializeAndBuildList() async {
     _allBooks = await DatabaseHelper.instance.getAllBooks();
-    if (_allBooks.isNotEmpty) {
-      setState(() {
-        _appBarTitle = _allBooks.first.name;
-        _currentAppBarBookId = _allBooks.first.id;
-        _lastLoadedChapter = MapEntry(_allBooks.first.id, 0);
-        _isInitialized = true;
-      });
-      _loadMore(isInitialLoad: true);
-    }
-  }
+    if (_allBooks.isEmpty) return false;
 
-  void _onScroll() {
-    if (_scrollController.position.extentAfter < 500 && !_isLoading) {
-      _loadMore();
-    }
-  }
+    final allVersesData = await DatabaseHelper.instance.loadAllBibleData();
+    if (allVersesData.isEmpty) return false;
 
-  Future<void> _loadMore({bool isInitialLoad = false}) async {
-    if (_isLoading) return;
-    setState(() {
-      _isLoading = true;
-    });
+    int currentBookId = -1;
+    int currentChapter = -1;
 
-    List<ListItem> newItems = [];
-    int chaptersToLoadCount = isInitialLoad ? 3 : 1;
+    for (var i = 0; i < allVersesData.length; i++) {
+      final row = allVersesData[i];
+      final bookId = row['Id_book'] as int;
+      final bookName = row['Name_book'] as String;
+      final chapterNumber = row['Number_chapter'] as int;
+      final verseNumber = row['number_verse'].toString();
+      final verseContent = row['content_verse'] as String;
 
-    for (int i = 0; i < chaptersToLoadCount; i++) {
-      int bookIdToQuery = _lastLoadedChapter.key;
-      int nextChapterNumber = _lastLoadedChapter.value + 1;
-
-      final db = await DatabaseHelper.instance.database;
-      final chapterInDb = await db.query('Chapter',
-          where: 'Id_book = ? and Number_chapter = ?',
-          whereArgs: [bookIdToQuery, nextChapterNumber]);
-
-      if (chapterInDb.isNotEmpty) {
-        _lastLoadedChapter = MapEntry(bookIdToQuery, nextChapterNumber);
-      } else {
-        final currentBookIndex =
-            _allBooks.indexWhere((b) => b.id == bookIdToQuery);
-        if (currentBookIndex + 1 < _allBooks.length) {
-          final nextBook = _allBooks[currentBookIndex + 1];
-          _lastLoadedChapter = MapEntry(nextBook.id, 1);
-        } else {
-          setState(() {
-            _isLoading = false;
-          });
-          return;
-        }
+      if (bookId != currentBookId) {
+        _displayItems.add(BookMarker(bookName, bookId));
+        currentBookId = bookId;
+        currentChapter = 0;
       }
 
-      final currentBookId = _lastLoadedChapter.key;
-      final currentChapterNumber = _lastLoadedChapter.value;
-      final currentBook = _allBooks.firstWhere((b) => b.id == currentBookId);
-
-      final versesMaps = await DatabaseHelper.instance
-          .getVersesForChapter(currentBookId, currentChapterNumber);
-
-      if (versesMaps.isNotEmpty) {
-        if (currentChapterNumber == 1) {
-          newItems.add(BookMarker(currentBook.name, currentBook.id));
-        }
-        newItems.add(ChapterMarker(
-            currentChapterNumber, currentBook.id, currentBook.name));
-        for (var map in versesMaps) {
-          newItems.add(Verse(map['number_verse'].toString(),
-              map['content_verse'], currentBook.id, currentBook.name));
-        }
+      if (chapterNumber != currentChapter) {
+        final chapterKey = '$bookId-$chapterNumber';
+        _chapterIndexMap[chapterKey] = _displayItems.length;
+        _displayItems.add(ChapterMarker(chapterNumber, bookId, bookName));
+        currentChapter = chapterNumber;
       }
+
+      _displayItems.add(
+          Verse(verseNumber, verseContent, bookId, bookName, chapterNumber));
     }
 
     if (mounted) {
       setState(() {
-        _displayItems.addAll(newItems);
-        _isLoading = false;
+        _appBarTitle = _allBooks.first.name;
+        _bottomBarText = '${_allBooks.first.name}: 1';
       });
+    }
+
+    return true;
+  }
+
+  void _updateUIFromScroll() {
+    final positions = _itemPositionsListener.itemPositions.value;
+    if (positions.isEmpty) return;
+
+    try {
+      final firstVisibleItemIndex = positions
+          .where((pos) => pos.itemLeadingEdge < 1)
+          .map((pos) => pos.index)
+          .reduce((min, e) => e < min ? e : min);
+
+      if (firstVisibleItemIndex < _displayItems.length) {
+        final topItem = _displayItems[firstVisibleItemIndex];
+        if (_appBarTitle != topItem.bookName ||
+            _bottomBarText != '${topItem.bookName}: ${topItem.chapterNumber}') {
+          setState(() {
+            _appBarTitle = topItem.bookName;
+            _bottomBarText = '${topItem.bookName}: ${topItem.chapterNumber}';
+          });
+        }
+      }
+    } catch (e) {
+      // Ignora erro
     }
   }
 
-  // LÓGICA ATUALIZADA: Esta função agora usa o item mais ao topo da tela.
-  void _updateAppBarTitleFromVisibleItems() {
-    if (_visibleItemIndices.isEmpty || _displayItems.isEmpty) return;
+  void _navigateToChapter(int direction) {
+    final parts = _bottomBarText.split(': ');
+    if (parts.length < 2) return;
 
-    // Encontra o menor índice na lista de visíveis (o que está mais ao topo).
-    final topIndex = _visibleItemIndices.reduce((min, e) => e < min ? e : min);
+    final currentBookName = parts[0];
+    final currentChapterNum = int.tryParse(parts[1]) ?? 1;
+    final currentBookIndex =
+        _allBooks.indexWhere((b) => b.name == currentBookName);
+    if (currentBookIndex == -1) return;
 
-    // Garante que o índice é válido
-    if (topIndex >= _displayItems.length) return;
+    final currentBook = _allBooks[currentBookIndex];
+    int targetBookIndex = currentBookIndex;
+    int targetChapterNum = currentChapterNum + direction;
 
-    final topItem = _displayItems[topIndex];
+    if (targetChapterNum > currentBook.chapterCount) {
+      if (currentBookIndex + 1 < _allBooks.length) {
+        targetBookIndex++;
+        targetChapterNum = 1;
+      } else {
+        targetChapterNum = currentBook.chapterCount;
+      }
+    } else if (targetChapterNum < 1) {
+      if (currentBookIndex > 0) {
+        targetBookIndex--;
+        targetChapterNum = _allBooks[targetBookIndex].chapterCount;
+      } else {
+        targetChapterNum = 1;
+      }
+    }
 
-    // Atualiza o título apenas se o livro do topo mudou.
-    if (topItem.bookId != _currentAppBarBookId) {
-      setState(() {
-        _currentAppBarBookId = topItem.bookId;
-        _appBarTitle = topItem.bookName;
-      });
+    final targetBook = _allBooks[targetBookIndex];
+    final chapterKey = '${targetBook.id}-$targetChapterNum';
+
+    if (_chapterIndexMap.containsKey(chapterKey)) {
+      _itemScrollController.jumpTo(index: _chapterIndexMap[chapterKey]!);
     }
   }
 
@@ -264,45 +278,107 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title:
-            Text(_appBarTitle, style: const TextStyle(color: Colors.white70)),
-        elevation: 1,
+        title: Text(_appBarTitle),
       ),
-      body: !_isInitialized
-          ? const Center(child: CircularProgressIndicator())
-          : ListView.builder(
-              controller: _scrollController,
-              cacheExtent: 1000.0,
-              itemCount: _displayItems.length + (_isLoading ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index >= _displayItems.length) {
-                  return const Padding(
-                    padding: EdgeInsets.all(32.0),
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
+      body: FutureBuilder<bool>(
+        future: _initializationFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 20),
+                  Text("Carregando...", style: TextStyle(fontSize: 16)),
+                  Text("(Isso pode levar alguns segundos)"),
+                ],
+              ),
+            );
+          }
+          if (snapshot.hasError || snapshot.data == false) {
+            return const Center(
+                child: Text("Erro ao carregar o banco de dados."));
+          }
 
-                final item = _displayItems[index];
-
-                // NOVO: O VisibilityDetector agora envolve cada item para uma detecção precisa.
-                return VisibilityDetector(
-                  key: Key('item_$index'),
-                  onVisibilityChanged: (info) {
-                    if (info.visibleFraction > 0) {
-                      _visibleItemIndices.add(index);
-                    } else {
-                      _visibleItemIndices.remove(index);
-                    }
-                    _updateAppBarTitleFromVisibleItems();
-                  },
-                  child: _buildListItem(item),
-                );
-              },
-            ),
+          return Stack(
+            children: [
+              ScrollablePositionedList.builder(
+                itemScrollController: _itemScrollController,
+                itemPositionsListener: _itemPositionsListener,
+                itemCount: _displayItems.length,
+                itemBuilder: (context, index) {
+                  return _buildListItem(_displayItems[index]);
+                },
+              ),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                          begin: Alignment.bottomCenter,
+                          end: Alignment.topCenter,
+                          colors: [
+                        Colors.black.withOpacity(0.7),
+                        Colors.transparent,
+                      ],
+                          stops: const [
+                        0.0,
+                        1.0
+                      ])),
+                  child: BottomAppBar(
+                    color: Colors.transparent,
+                    elevation: 0,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8.0, vertical: 4.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          _buildNavButton(
+                              Icons.chevron_left, () => _navigateToChapter(-1)),
+                          TextButton(
+                            onPressed: () {},
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.white.withOpacity(0.9),
+                            ),
+                            child: Text(
+                              _bottomBarText,
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 16),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          _buildNavButton(
+                              Icons.chevron_right, () => _navigateToChapter(1)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            ],
+          );
+        },
+      ),
     );
   }
 
-  // NOVO: Widget separado para construir os itens da lista, mantendo o builder limpo.
+  Widget _buildNavButton(IconData icon, VoidCallback onPressed) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.25),
+        borderRadius: BorderRadius.circular(8.0),
+      ),
+      child: IconButton(
+        icon: Icon(icon, color: Colors.white70, size: 30),
+        onPressed: onPressed,
+      ),
+    );
+  }
+
   Widget _buildListItem(ListItem item) {
     if (item is BookMarker) {
       return Container(
