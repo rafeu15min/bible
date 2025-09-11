@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'dart:io';
@@ -7,36 +8,41 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 // --- Modelos de Dados ---
 
-// Cada item da lista agora conhece o livro e capítulo ao qual pertence.
+// Cada item da lista agora conhece o livro, a abreviação e o capítulo.
 abstract class ListItem {
   final int bookId;
   final String bookName;
+  final String? bookAbbreviation;
   final int chapterNumber;
-  ListItem(this.bookId, this.bookName, this.chapterNumber);
+  ListItem(
+      this.bookId, this.bookName, this.bookAbbreviation, this.chapterNumber);
 }
 
 class BookMarker extends ListItem {
-  BookMarker(String bookName, int bookId) : super(bookId, bookName, 1);
+  BookMarker(String bookName, int bookId, String? bookAbbreviation)
+      : super(bookId, bookName, bookAbbreviation, 1);
 }
 
 class ChapterMarker extends ListItem {
-  ChapterMarker(int chapterNumber, int bookId, String bookName)
-      : super(bookId, bookName, chapterNumber);
+  ChapterMarker(
+      int chapterNumber, int bookId, String bookName, String? bookAbbreviation)
+      : super(bookId, bookName, bookAbbreviation, chapterNumber);
 }
 
 class Verse extends ListItem {
   final String verseNumber;
   final String content;
   Verse(this.verseNumber, this.content, int bookId, String bookName,
-      int chapterNumber)
-      : super(bookId, bookName, chapterNumber);
+      String? bookAbbreviation, int chapterNumber)
+      : super(bookId, bookName, bookAbbreviation, chapterNumber);
 }
 
 class Book {
   final int id;
   final String name;
+  final String? abbreviation;
   final int chapterCount;
-  Book(this.id, this.name, this.chapterCount);
+  Book(this.id, this.name, this.abbreviation, this.chapterCount);
 }
 
 // --- Classe Auxiliar do Banco de Dados ---
@@ -66,11 +72,11 @@ class DatabaseHelper {
     return await openDatabase(path, version: 1);
   }
 
-  // Busca todos os livros com sua respectiva contagem de capítulos.
+  // Busca todos os livros com sua respectiva contagem de capítulos e abreviação.
   Future<List<Book>> getAllBooks() async {
     final db = await instance.database;
     final List<Map<String, dynamic>> maps = await db.rawQuery('''
-      SELECT b.Id_book, b.Name_book, COUNT(c.Id_chapter) as chapter_count
+      SELECT b.Id_book, b.Name_book, b.Abbreviation_book, COUNT(c.Id_chapter) as chapter_count
       FROM Book b
       LEFT JOIN Chapter c ON b.Id_book = c.Id_book
       WHERE c.Number_chapter > 0
@@ -81,6 +87,7 @@ class DatabaseHelper {
       return Book(
         maps[i]['Id_book'],
         maps[i]['Name_book'],
+        maps[i]['Abbreviation_book'],
         maps[i]['chapter_count'],
       );
     });
@@ -91,7 +98,7 @@ class DatabaseHelper {
     final db = await instance.database;
     return await db.rawQuery('''
       SELECT
-        b.Id_book, b.Name_book,
+        b.Id_book, b.Name_book, b.Abbreviation_book,
         c.Number_chapter,
         v.number_verse, v.content_verse
       FROM Verse v
@@ -150,7 +157,9 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   final Map<String, int> _chapterIndexMap = {};
 
   String _appBarTitle = 'Bíblia';
-  String _bottomBarText = 'Gênesis 1';
+  String _bottomBarText = 'Gn 1'; // Formato inicial
+
+  SelectedContent? _selectedContent;
 
   @override
   void initState() {
@@ -167,14 +176,10 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
   Future<bool> _initializeAndBuildList() async {
     _allBooks = await DatabaseHelper.instance.getAllBooks();
-    if (_allBooks.isEmpty) {
-      return false;
-    }
+    if (_allBooks.isEmpty) return false;
 
     final allVersesData = await DatabaseHelper.instance.loadAllBibleData();
-    if (allVersesData.isEmpty) {
-      return false;
-    }
+    if (allVersesData.isEmpty) return false;
 
     int currentBookId = -1;
     int currentChapter = -1;
@@ -182,31 +187,34 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     for (var row in allVersesData) {
       final bookId = row['Id_book'] as int;
       final bookName = row['Name_book'] as String;
+      final bookAbbreviation = row['Abbreviation_book'] as String?;
       final chapterNumber = row['Number_chapter'] as int;
       final verseNumber = row['number_verse'].toString();
       final verseContent = row['content_verse'] as String;
 
       if (bookId != currentBookId) {
-        _displayItems.add(BookMarker(bookName, bookId));
+        _displayItems.add(BookMarker(bookName, bookId, bookAbbreviation));
         currentBookId = bookId;
-        currentChapter = 0; // Reseta o capítulo ao mudar de livro
+        currentChapter = 0;
       }
 
       if (chapterNumber != currentChapter) {
         final chapterKey = '$bookId-$chapterNumber';
         _chapterIndexMap[chapterKey] = _displayItems.length;
-        _displayItems.add(ChapterMarker(chapterNumber, bookId, bookName));
+        _displayItems.add(
+            ChapterMarker(chapterNumber, bookId, bookName, bookAbbreviation));
         currentChapter = chapterNumber;
       }
 
-      _displayItems.add(
-          Verse(verseNumber, verseContent, bookId, bookName, chapterNumber));
+      _displayItems.add(Verse(verseNumber, verseContent, bookId, bookName,
+          bookAbbreviation, chapterNumber));
     }
 
     if (mounted) {
       setState(() {
-        _appBarTitle = _allBooks.first.name;
-        _bottomBarText = '${_allBooks.first.name} 1';
+        final firstBook = _allBooks.first;
+        _appBarTitle = firstBook.name;
+        _bottomBarText = '${firstBook.abbreviation ?? firstBook.name} 1';
       });
     }
 
@@ -225,11 +233,14 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
       if (firstVisibleItemIndex < _displayItems.length) {
         final topItem = _displayItems[firstVisibleItemIndex];
+        final newBottomBarText =
+            '${topItem.bookAbbreviation ?? topItem.bookName} ${topItem.chapterNumber}';
+
         if (_appBarTitle != topItem.bookName ||
-            _bottomBarText != '${topItem.bookName} ${topItem.chapterNumber}') {
+            _bottomBarText != newBottomBarText) {
           setState(() {
             _appBarTitle = topItem.bookName;
-            _bottomBarText = '${topItem.bookName} ${topItem.chapterNumber}';
+            _bottomBarText = newBottomBarText;
           });
         }
       }
@@ -239,31 +250,23 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _navigateToChapter(int direction) {
-    final parts = _bottomBarText.split(' ');
-    if (parts.isEmpty) return;
-
-    final chapterString = parts.last;
-    final bookNameParts = parts.sublist(0, parts.length - 1);
-    final currentBookName = bookNameParts.join(' ');
-
+    final currentBook = _allBooks.firstWhere((b) => b.name == _appBarTitle,
+        orElse: () => _allBooks.first);
+    final chapterString = _bottomBarText.split(' ').last;
     final currentChapterNum = int.tryParse(chapterString) ?? 1;
-    final currentBookIndex =
-        _allBooks.indexWhere((b) => b.name == currentBookName);
-    if (currentBookIndex == -1) return;
 
-    final currentBook = _allBooks[currentBookIndex];
-    int targetBookIndex = currentBookIndex;
+    int targetBookIndex = _allBooks.indexOf(currentBook);
     int targetChapterNum = currentChapterNum + direction;
 
     if (targetChapterNum > currentBook.chapterCount) {
-      if (currentBookIndex + 1 < _allBooks.length) {
+      if (targetBookIndex + 1 < _allBooks.length) {
         targetBookIndex++;
         targetChapterNum = 1;
       } else {
         targetChapterNum = currentBook.chapterCount;
       }
     } else if (targetChapterNum < 1) {
-      if (currentBookIndex > 0) {
+      if (targetBookIndex > 0) {
         targetBookIndex--;
         targetChapterNum = _allBooks[targetBookIndex].chapterCount;
       } else {
@@ -276,6 +279,72 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
     if (_chapterIndexMap.containsKey(chapterKey)) {
       _itemScrollController.jumpTo(index: _chapterIndexMap[chapterKey]!);
+    }
+  }
+
+  // FUNÇÃO DE CÓPIA TOTALMENTE REESCRITA E OTIMIZADA
+  Future<void> _copySelectionWithReference() async {
+    final selection = _selectedContent?.plainText;
+    if (selection == null || selection.isEmpty) return;
+
+    final currentBook = _allBooks.firstWhere((b) => b.name == _appBarTitle,
+        orElse: () => _allBooks.first);
+    final chapterString = _bottomBarText.split(' ').last;
+    final currentChapterNum = int.tryParse(chapterString) ?? 1;
+
+    // Busca apenas os versículos do capítulo atual para análise
+    final versesInChapter = _displayItems
+        .whereType<Verse>()
+        .where((v) =>
+            v.bookId == currentBook.id && v.chapterNumber == currentChapterNum)
+        .toList();
+
+    final List<Verse> involvedVerses = [];
+    for (final verse in versesInChapter) {
+      // Verifica se a seleção contém o texto completo do versículo ou vice-versa
+      final verseFullText = '${verse.verseNumber} ${verse.content}';
+      if (selection.contains(verseFullText) ||
+          verseFullText.contains(selection)) {
+        involvedVerses.add(verse);
+      }
+    }
+
+    if (involvedVerses.isEmpty) {
+      Clipboard.setData(ClipboardData(text: selection));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Texto copiado!')),
+        );
+      }
+      return;
+    }
+
+    involvedVerses.sort(
+        (a, b) => int.parse(a.verseNumber).compareTo(int.parse(b.verseNumber)));
+    final firstVerse = involvedVerses.first;
+    final lastVerse = involvedVerses.last;
+
+    final bookAbbr = firstVerse.bookAbbreviation ?? firstVerse.bookName;
+    final chapter = firstVerse.chapterNumber;
+
+    String reference;
+    if (firstVerse.verseNumber == lastVerse.verseNumber) {
+      reference = '$bookAbbr $chapter:${firstVerse.verseNumber}';
+    } else {
+      reference =
+          '$bookAbbr $chapter:${firstVerse.verseNumber}-${lastVerse.verseNumber}';
+    }
+
+    // Monta o texto copiado com o conteúdo completo dos versículos envolvidos
+    final copiedText =
+        involvedVerses.map((v) => '${v.verseNumber} ${v.content}').join(' ');
+    final finalString = '$reference "$copiedText"';
+
+    await Clipboard.setData(ClipboardData(text: finalString));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Copiado com referência!')),
+      );
     }
   }
 
@@ -319,8 +388,9 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 20),
-                  Text("Carregando...", style: TextStyle(fontSize: 16)),
-                  Text("(Isso pode levar alguns segundos)"),
+                  Text("Carregando toda a Bíblia...",
+                      style: TextStyle(fontSize: 16)),
+                  Text("(Isso pode levar alguns segundos na primeira vez)"),
                 ],
               ),
             );
@@ -332,33 +402,59 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
           return Stack(
             children: [
-              Padding(
-                  padding: const EdgeInsets.only(bottom: 80),
-                  // ALTERAÇÃO: A lista agora é envolvida por um SelectionArea
-                  child: SelectionArea(
-                    child: ScrollablePositionedList.builder(
-                      itemScrollController: _itemScrollController,
-                      itemPositionsListener: _itemPositionsListener,
-                      itemCount: _displayItems.length,
-                      itemBuilder: (context, index) {
-                        return _buildListItem(_displayItems[index]);
-                      },
-                    ),
-                  )),
+              SelectionArea(
+                onSelectionChanged: (SelectedContent? content) {
+                  setState(() {
+                    _selectedContent = content;
+                  });
+                },
+                // MENU DE CONTEXTO ATUALIZADO
+                contextMenuBuilder: (context, editableTextState) {
+                  final List<ContextMenuButtonItem> buttonItems =
+                      editableTextState.contextMenuButtonItems;
+                  // Remove o botão "Selecionar Tudo"
+                  buttonItems.removeWhere(
+                      (item) => item.type == ContextMenuButtonType.selectAll);
+
+                  // Adiciona o nosso botão personalizado
+                  buttonItems.insert(
+                      1,
+                      ContextMenuButtonItem(
+                        onPressed: () {
+                          _copySelectionWithReference();
+                          editableTextState.hideToolbar();
+                        },
+                        label: 'Copiar com Referência',
+                      ));
+
+                  return AdaptiveTextSelectionToolbar.buttonItems(
+                    anchors: editableTextState.contextMenuAnchors,
+                    buttonItems: buttonItems,
+                  );
+                },
+                child: ScrollablePositionedList.builder(
+                  itemScrollController: _itemScrollController,
+                  itemPositionsListener: _itemPositionsListener,
+                  itemCount: _displayItems.length,
+                  itemBuilder: (context, index) {
+                    return _buildListItem(_displayItems[index]);
+                  },
+                ),
+              ),
               Positioned(
                 bottom: 0,
                 left: 0,
                 right: 0,
                 child: Container(
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                       gradient: LinearGradient(
                           begin: Alignment.bottomCenter,
                           end: Alignment.topCenter,
                           colors: [
-                        Color.fromRGBO(0, 0, 0, 0.7),
+                        const Color.fromRGBO(0, 0, 0, 0.7),
                         Colors.transparent,
                       ],
-                          stops: [
+                          stops: const [
                         0.0,
                         1.0
                       ])),
@@ -430,7 +526,6 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
   Widget _buildListItem(ListItem item) {
     if (item is BookMarker) {
-      // ALTERAÇÃO: Título do livro envolvido por SelectionContainer.disabled
       return SelectionContainer.disabled(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 48),
@@ -447,7 +542,6 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     }
 
     if (item is ChapterMarker) {
-      // ALTERAÇÃO: Título do capítulo envolvido por SelectionContainer.disabled
       return SelectionContainer.disabled(
         child: Padding(
           padding: const EdgeInsets.only(top: 24.0, bottom: 16.0),
@@ -464,7 +558,6 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     }
 
     if (item is Verse) {
-      // O versículo permanece como estava, pois queremos que ele seja selecionável
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 16.0),
         child: Row(
@@ -506,11 +599,11 @@ class BookChapterSelectorDialog extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  _BookChapterSelectorDialogState createState() =>
-      _BookChapterSelectorDialogState();
+  BookChapterSelectorDialogState createState() =>
+      BookChapterSelectorDialogState();
 }
 
-class _BookChapterSelectorDialogState extends State<BookChapterSelectorDialog> {
+class BookChapterSelectorDialogState extends State<BookChapterSelectorDialog> {
   late Book _selectedBook;
 
   @override
@@ -566,6 +659,7 @@ class _BookChapterSelectorDialogState extends State<BookChapterSelectorDialog> {
                   final chapterNumber = index + 1;
                   return ElevatedButton(
                     style: ElevatedButton.styleFrom(
+                      padding: EdgeInsets.zero,
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(0)),
                     ),
