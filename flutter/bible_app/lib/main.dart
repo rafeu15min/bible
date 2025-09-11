@@ -151,7 +151,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   final Map<String, int> _chapterIndexMap = {};
 
   String _appBarTitle = 'Bíblia';
-  String _bottomBarText = 'Gênesis: 1';
+  String _bottomBarText = 'Gênesis 1';
 
   @override
   void initState() {
@@ -207,7 +207,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     if (mounted) {
       setState(() {
         _appBarTitle = _allBooks.first.name;
-        _bottomBarText = '${_allBooks.first.name}: 1';
+        _bottomBarText = '${_allBooks.first.name} 1';
       });
     }
 
@@ -227,10 +227,10 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
       if (firstVisibleItemIndex < _displayItems.length) {
         final topItem = _displayItems[firstVisibleItemIndex];
         if (_appBarTitle != topItem.bookName ||
-            _bottomBarText != '${topItem.bookName}: ${topItem.chapterNumber}') {
+            _bottomBarText != '${topItem.bookName} ${topItem.chapterNumber}') {
           setState(() {
             _appBarTitle = topItem.bookName;
-            _bottomBarText = '${topItem.bookName}: ${topItem.chapterNumber}';
+            _bottomBarText = '${topItem.bookName} ${topItem.chapterNumber}';
           });
         }
       }
@@ -240,7 +240,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 
   void _navigateToChapter(int direction) {
-    final parts = _bottomBarText.split(': ');
+    final parts = _bottomBarText.split(' ');
     if (parts.length < 2) return;
 
     final currentBookName = parts[0];
@@ -317,9 +317,8 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 20),
-                  Text("Carregando toda a Bíblia...",
-                      style: TextStyle(fontSize: 16)),
-                  Text("(Isso pode levar alguns segundos na primeira vez)"),
+                  Text("Carregando...", style: TextStyle(fontSize: 16)),
+                  Text("(Isso pode levar alguns segundos)"),
                 ],
               ),
             );
@@ -331,28 +330,32 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
           return Stack(
             children: [
-              ScrollablePositionedList.builder(
-                itemScrollController: _itemScrollController,
-                itemPositionsListener: _itemPositionsListener,
-                itemCount: _displayItems.length,
-                itemBuilder: (context, index) {
-                  return _buildListItem(_displayItems[index]);
-                },
-              ),
+              Padding(
+                  padding: EdgeInsets.only(bottom: 80),
+                  child: SelectionArea(
+                    child: ScrollablePositionedList.builder(
+                      itemScrollController: _itemScrollController,
+                      itemPositionsListener: _itemPositionsListener,
+                      itemCount: _displayItems.length,
+                      itemBuilder: (context, index) {
+                        return _buildListItem(_displayItems[index]);
+                      },
+                    ),
+                  )),
               Positioned(
                 bottom: 0,
                 left: 0,
                 right: 0,
                 child: Container(
-                  decoration: BoxDecoration(
+                  decoration: const BoxDecoration(
                       gradient: LinearGradient(
                           begin: Alignment.bottomCenter,
                           end: Alignment.topCenter,
                           colors: [
-                        const Color.fromRGBO(0, 0, 0, 0.7),
+                        Color.fromRGBO(0, 0, 0, 0.7),
                         Colors.transparent,
                       ],
-                          stops: const [
+                          stops: [
                         0.0,
                         1.0
                       ])),
