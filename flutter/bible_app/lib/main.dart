@@ -144,8 +144,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   final ItemPositionsListener _itemPositionsListener =
       ItemPositionsListener.create();
 
-  // CORREÇÃO: A variável Future agora é anulável para evitar o LateInitializationError.
-  Future<bool>? _initializationFuture;
+  late Future<bool> _initializationFuture;
   List<Book> _allBooks = [];
   final List<ListItem> _displayItems = [];
   final Map<String, int> _chapterIndexMap = {};
@@ -241,10 +240,13 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
   void _navigateToChapter(int direction) {
     final parts = _bottomBarText.split(' ');
-    if (parts.length < 2) return;
+    if (parts.isEmpty) return;
 
-    final currentBookName = parts[0];
-    final currentChapterNum = int.tryParse(parts[1]) ?? 1;
+    final chapterString = parts.last;
+    final bookNameParts = parts.sublist(0, parts.length - 1);
+    final currentBookName = bookNameParts.join(' ');
+
+    final currentChapterNum = int.tryParse(chapterString) ?? 1;
     final currentBookIndex =
         _allBooks.indexWhere((b) => b.name == currentBookName);
     if (currentBookIndex == -1) return;
@@ -331,7 +333,8 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
           return Stack(
             children: [
               Padding(
-                  padding: EdgeInsets.only(bottom: 80),
+                  padding: const EdgeInsets.only(bottom: 80),
+                  // ALTERAÇÃO: A lista agora é envolvida por um SelectionArea
                   child: SelectionArea(
                     child: ScrollablePositionedList.builder(
                       itemScrollController: _itemScrollController,
@@ -427,32 +430,41 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
   Widget _buildListItem(ListItem item) {
     if (item is BookMarker) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 48),
-        alignment: Alignment.center,
-        child: Text(
-          item.bookName,
-          style: const TextStyle(
-              fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87),
+      // ALTERAÇÃO: Título do livro envolvido por SelectionContainer.disabled
+      return SelectionContainer.disabled(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 48),
+          alignment: Alignment.center,
+          child: Text(
+            item.bookName,
+            style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87),
+          ),
         ),
       );
     }
 
     if (item is ChapterMarker) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 24.0, bottom: 16.0),
-        child: Text(
-          'Capítulo ${item.chapterNumber}',
-          style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1A237E)),
-          textAlign: TextAlign.center,
+      // ALTERAÇÃO: Título do capítulo envolvido por SelectionContainer.disabled
+      return SelectionContainer.disabled(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 24.0, bottom: 16.0),
+          child: Text(
+            'Capítulo ${item.chapterNumber}',
+            style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1A237E)),
+            textAlign: TextAlign.center,
+          ),
         ),
       );
     }
 
     if (item is Verse) {
+      // O versículo permanece como estava, pois queremos que ele seja selecionável
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 16.0),
         child: Row(
@@ -469,6 +481,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
               child: Text(
                 item.content,
                 style: const TextStyle(fontSize: 16, height: 1.5),
+                textAlign: TextAlign.justify,
               ),
             ),
           ],
@@ -552,24 +565,23 @@ class _BookChapterSelectorDialogState extends State<BookChapterSelectorDialog> {
                 itemBuilder: (context, index) {
                   final chapterNumber = index + 1;
                   return ElevatedButton(
-                      onPressed: () {
-                        Navigator.of(context).pop({
-                          'bookId': _selectedBook.id,
-                          'chapter': chapterNumber,
-                        });
-                      },
-                      style: ElevatedButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(0),
-                        ),
+                    style: ElevatedButton.styleFrom(
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(0)),
+                    ),
+                    onPressed: () {
+                      Navigator.of(context).pop({
+                        'bookId': _selectedBook.id,
+                        'chapter': chapterNumber,
+                      });
+                    },
+                    child: Center(
+                      child: Text(
+                        '$chapterNumber',
+                        style: const TextStyle(fontSize: 10.0),
                       ),
-                      child: Center(
-                        child: Text(
-                          '$chapterNumber',
-                          style: TextStyle(fontSize: 10.0),
-                        ),
-                      ));
+                    ),
+                  );
                 },
               ),
             ),
