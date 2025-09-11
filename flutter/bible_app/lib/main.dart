@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart'
-    as p; // CORREÇÃO: Import com apelido para evitar conflito.
+import 'package:path/path.dart' as p;
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
@@ -50,13 +49,11 @@ class DatabaseHelper {
 
   Future<Database> _initDatabase() async {
     String dbPath = await getDatabasesPath();
-    // CORREÇÃO: Usa o apelido 'p' para a função join.
     String path = p.join(dbPath, 'bible.db');
 
     bool dbExists = await databaseExists(path);
     if (!dbExists) {
       try {
-        // CORREÇÃO: Usa o apelido 'p' para a função dirname.
         await Directory(p.dirname(path)).create(recursive: true);
         ByteData data = await rootBundle.load(p.join('assets', 'bible.db'));
         List<int> bytes =
@@ -89,17 +86,20 @@ class DatabaseHelper {
     });
   }
 
-  // Busca os versículos de um capítulo específico
-  Future<List<Map<String, dynamic>>> getVersesForChapter(
-      int bookId, int chapterNumber) async {
-    Database db = await instance.database;
+  // Carrega toda a Bíblia de uma vez para a memória.
+  Future<List<Map<String, dynamic>>> loadAllBibleData() async {
+    final db = await instance.database;
     return await db.rawQuery('''
-      SELECT v.number_verse, v.content_verse
+      SELECT
+        b.Id_book, b.Name_book,
+        c.Number_chapter,
+        v.number_verse, v.content_verse
       FROM Verse v
       INNER JOIN Chapter c ON v.Id_chapter = c.Id_chapter
-      WHERE c.Id_book = ? AND c.Number_chapter = ?
-      ORDER BY CAST(v.number_verse AS INTEGER)
-    ''', [bookId, chapterNumber]);
+      INNER JOIN Book b ON c.Id_book = b.Id_book
+      WHERE c.Number_chapter > 0
+      ORDER BY b.Id_book ASC, c.Number_chapter ASC, CAST(v.number_verse AS INTEGER) ASC
+    ''');
   }
 }
 
@@ -140,28 +140,24 @@ class BibleReaderScreen extends StatefulWidget {
 }
 
 class BibleReaderScreenState extends State<BibleReaderScreen> {
-  // Controladores para a lista rolável
   final ItemScrollController _itemScrollController = ItemScrollController();
   final ItemPositionsListener _itemPositionsListener =
       ItemPositionsListener.create();
 
+  // CORREÇÃO: A variável Future agora é anulável para evitar o LateInitializationError.
   Future<bool>? _initializationFuture;
   List<Book> _allBooks = [];
   final List<ListItem> _displayItems = [];
   final Map<String, int> _chapterIndexMap = {};
 
-  bool _isLoading = false;
-
   String _appBarTitle = 'Bíblia';
   String _bottomBarText = 'Gênesis: 1';
-
-  MapEntry<int, int> _lastLoadedChapter = const MapEntry(0, 0);
 
   @override
   void initState() {
     super.initState();
     _itemPositionsListener.itemPositions.addListener(_updateUIFromScroll);
-    _initializationFuture = _initialize();
+    _initializationFuture = _initializeAndBuildList();
   }
 
   @override
@@ -170,14 +166,52 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     super.dispose();
   }
 
-  Future<bool> _initialize() async {
+  Future<bool> _initializeAndBuildList() async {
     _allBooks = await DatabaseHelper.instance.getAllBooks();
-    if (_allBooks.isNotEmpty) {
-      _lastLoadedChapter = MapEntry(_allBooks.first.id, 0);
-      await _loadMore(isInitialLoad: true);
-      return true;
+    if (_allBooks.isEmpty) {
+      return false;
     }
-    return false;
+
+    final allVersesData = await DatabaseHelper.instance.loadAllBibleData();
+    if (allVersesData.isEmpty) {
+      return false;
+    }
+
+    int currentBookId = -1;
+    int currentChapter = -1;
+
+    for (var row in allVersesData) {
+      final bookId = row['Id_book'] as int;
+      final bookName = row['Name_book'] as String;
+      final chapterNumber = row['Number_chapter'] as int;
+      final verseNumber = row['number_verse'].toString();
+      final verseContent = row['content_verse'] as String;
+
+      if (bookId != currentBookId) {
+        _displayItems.add(BookMarker(bookName, bookId));
+        currentBookId = bookId;
+        currentChapter = 0; // Reseta o capítulo ao mudar de livro
+      }
+
+      if (chapterNumber != currentChapter) {
+        final chapterKey = '$bookId-$chapterNumber';
+        _chapterIndexMap[chapterKey] = _displayItems.length;
+        _displayItems.add(ChapterMarker(chapterNumber, bookId, bookName));
+        currentChapter = chapterNumber;
+      }
+
+      _displayItems.add(
+          Verse(verseNumber, verseContent, bookId, bookName, chapterNumber));
+    }
+
+    if (mounted) {
+      setState(() {
+        _appBarTitle = _allBooks.first.name;
+        _bottomBarText = '${_allBooks.first.name}: 1';
+      });
+    }
+
+    return true;
   }
 
   void _updateUIFromScroll() {
@@ -205,96 +239,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     }
   }
 
-  Future<void> _loadMore({bool isInitialLoad = false}) async {
-    if (_isLoading) return;
-    if (mounted)
-      setState(() {
-        _isLoading = true;
-      });
-
-    final newItemsBatch = <ListItem>[];
-    int chaptersToLoadCount = isInitialLoad ? 10 : 5;
-
-    try {
-      for (int i = 0; i < chaptersToLoadCount; i++) {
-        int bookIdToQuery = _lastLoadedChapter.key;
-        int nextChapterNumber = _lastLoadedChapter.value + 1;
-
-        final currentBookIndex =
-            _allBooks.indexWhere((b) => b.id == bookIdToQuery);
-        if (currentBookIndex == -1) break;
-
-        final currentBook = _allBooks[currentBookIndex];
-
-        if (nextChapterNumber > currentBook.chapterCount) {
-          if (currentBookIndex + 1 < _allBooks.length) {
-            final nextBook = _allBooks[currentBookIndex + 1];
-            _lastLoadedChapter = MapEntry(nextBook.id, 0);
-            continue;
-          } else {
-            break;
-          }
-        } else {
-          _lastLoadedChapter = MapEntry(bookIdToQuery, nextChapterNumber);
-        }
-
-        final currentBookId = _lastLoadedChapter.key;
-        final currentChapterNumber = _lastLoadedChapter.value;
-        final bookForDisplay =
-            _allBooks.firstWhere((b) => b.id == currentBookId);
-
-        final chapterKey = '$currentBookId-$currentChapterNumber';
-        _chapterIndexMap[chapterKey] =
-            _displayItems.length + newItemsBatch.length;
-
-        final versesMaps = await DatabaseHelper.instance
-            .getVersesForChapter(currentBookId, currentChapterNumber);
-        if (versesMaps.isNotEmpty) {
-          if (currentChapterNumber == 1) {
-            newItemsBatch
-                .add(BookMarker(bookForDisplay.name, bookForDisplay.id));
-          }
-          newItemsBatch.add(ChapterMarker(
-              currentChapterNumber, bookForDisplay.id, bookForDisplay.name));
-          for (var map in versesMaps) {
-            newItemsBatch.add(Verse(
-                map['number_verse'].toString(),
-                map['content_verse'],
-                bookForDisplay.id,
-                bookForDisplay.name,
-                currentChapterNumber));
-          }
-        }
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _displayItems.addAll(newItemsBatch);
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _jumpToChapter(int bookId, int chapterNum) async {
-    final chapterKey = '$bookId-$chapterNum';
-
-    if (_chapterIndexMap.containsKey(chapterKey)) {
-      _itemScrollController.jumpTo(index: _chapterIndexMap[chapterKey]!);
-    } else {
-      if (mounted) {
-        setState(() {
-          _isLoading = true;
-          _displayItems.clear();
-          _chapterIndexMap.clear();
-          _lastLoadedChapter = MapEntry(bookId, chapterNum - 1);
-        });
-      }
-      await _loadMore(isInitialLoad: true);
-    }
-  }
-
-  void _navigateToChapterByDirection(int direction) {
+  void _navigateToChapter(int direction) {
     final parts = _bottomBarText.split(': ');
     if (parts.length < 2) return;
 
@@ -325,7 +270,11 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     }
 
     final targetBook = _allBooks[targetBookIndex];
-    _jumpToChapter(targetBook.id, targetChapterNum);
+    final chapterKey = '${targetBook.id}-$targetChapterNum';
+
+    if (_chapterIndexMap.containsKey(chapterKey)) {
+      _itemScrollController.jumpTo(index: _chapterIndexMap[chapterKey]!);
+    }
   }
 
   void _showBookChapterSelector() async {
@@ -345,7 +294,10 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
     if (result != null &&
         result.containsKey('bookId') &&
         result.containsKey('chapter')) {
-      _jumpToChapter(result['bookId']!, result['chapter']!);
+      final chapterKey = '${result['bookId']}-${result['chapter']}';
+      if (_chapterIndexMap.containsKey(chapterKey)) {
+        _itemScrollController.jumpTo(index: _chapterIndexMap[chapterKey]!);
+      }
     }
   }
 
@@ -365,7 +317,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 20),
-                  Text("Carregando a Bíblia...",
+                  Text("Carregando toda a Bíblia...",
                       style: TextStyle(fontSize: 16)),
                   Text("(Isso pode levar alguns segundos na primeira vez)"),
                 ],
@@ -382,17 +334,8 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
               ScrollablePositionedList.builder(
                 itemScrollController: _itemScrollController,
                 itemPositionsListener: _itemPositionsListener,
-                itemCount: _displayItems.length + (_isLoading ? 1 : 0),
+                itemCount: _displayItems.length,
                 itemBuilder: (context, index) {
-                  if (index >= _displayItems.length) {
-                    if (!_isLoading) {
-                      Future.microtask(() => _loadMore());
-                    }
-                    return const Padding(
-                      padding: EdgeInsets.all(32.0),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
                   return _buildListItem(_displayItems[index]);
                 },
               ),
@@ -406,7 +349,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                           begin: Alignment.bottomCenter,
                           end: Alignment.topCenter,
                           colors: [
-                        Colors.black.withOpacity(0.7),
+                        const Color.fromRGBO(0, 0, 0, 0.7),
                         Colors.transparent,
                       ],
                           stops: const [
@@ -422,12 +365,12 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          _buildNavButton(Icons.chevron_left,
-                              () => _navigateToChapterByDirection(-1)),
+                          _buildNavButton(
+                              Icons.chevron_left, () => _navigateToChapter(-1)),
                           _buildNavButtonWithText(
                               _bottomBarText, _showBookChapterSelector),
-                          _buildNavButton(Icons.chevron_right,
-                              () => _navigateToChapterByDirection(1)),
+                          _buildNavButton(
+                              Icons.chevron_right, () => _navigateToChapter(1)),
                         ],
                       ),
                     ),
@@ -444,7 +387,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   Widget _buildNavButton(IconData icon, VoidCallback onPressed) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.25),
+        color: const Color.fromRGBO(0, 0, 0, 0.25),
         borderRadius: BorderRadius.circular(8.0),
       ),
       child: IconButton(
@@ -463,7 +406,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
           child: Container(
             height: 48,
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.25),
+              color: const Color.fromRGBO(0, 0, 0, 0.25),
               borderRadius: BorderRadius.circular(8.0),
             ),
             child: Center(
@@ -534,7 +477,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
   }
 }
 
-// --- NOVO WIDGET: A caixa de diálogo para selecionar Livro e Capítulo ---
+// --- WIDGET DE DIÁLOGO PARA SELECIONAR LIVRO E CAPÍTULO ---
 
 class BookChapterSelectorDialog extends StatefulWidget {
   final List<Book> allBooks;
@@ -598,32 +541,32 @@ class _BookChapterSelectorDialogState extends State<BookChapterSelectorDialog> {
               child: GridView.builder(
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 5,
-                  childAspectRatio: 1.2,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
+                  childAspectRatio: 1.0,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
                 ),
                 itemCount: _selectedBook.chapterCount,
                 itemBuilder: (context, index) {
                   final chapterNumber = index + 1;
                   return ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(0)),
-                    ),
-                    onPressed: () {
-                      Navigator.of(context).pop({
-                        'bookId': _selectedBook.id,
-                        'chapter': chapterNumber,
-                      });
-                    },
-                    child: Center(
-                      child: Text(
-                        '$chapterNumber',
-                        style: TextStyle(fontSize: 10.0),
+                      onPressed: () {
+                        Navigator.of(context).pop({
+                          'bookId': _selectedBook.id,
+                          'chapter': chapterNumber,
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(0),
+                        ),
                       ),
-                    ),
-                  );
+                      child: Center(
+                        child: Text(
+                          '$chapterNumber',
+                          style: TextStyle(fontSize: 10.0),
+                        ),
+                      ));
                 },
               ),
             ),

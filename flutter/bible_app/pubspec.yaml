@@ -6,36 +6,24 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=2.17.0 <3.0.0'
+  sdk: '>=2.12.0 <3.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  
-  # Pacote para interagir com o banco de dados SQLite
-  sqflite: ^2.0.3
-  
-  # Pacote para manipular caminhos de arquivos do sistema
+  sqflite: ^2.0.2
   path: ^1.8.1
-  
-  # NOVO: Pacote essencial para controle avançado de rolagem e detecção de itens
-  scrollable_positioned_list: ^0.3.5
-
-  # Mantido da versão anterior para detecção de visibilidade
+  # Pacote para controle avançado da lista
+  scrollable_positioned_list: ^0.3.2
   visibility_detector: ^0.3.3
-  
-  cupertino_icons: ^1.0.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  
-  flutter_lints: ^2.0.0
+  flutter_lints: ^1.0.0
 
 flutter:
   uses-material-design: true
-
-  # Garanta que o seu banco de dados esteja listado aqui
   assets:
     - assets/bible.db
 
