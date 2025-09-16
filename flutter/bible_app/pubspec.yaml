@@ -16,6 +16,7 @@ dependencies:
   # Pacote para controle avançado da lista
   scrollable_positioned_list: ^0.3.2
   visibility_detector: ^0.3.3
+  share_plus: ^9.0.0
 
 dev_dependencies:
   flutter_test:

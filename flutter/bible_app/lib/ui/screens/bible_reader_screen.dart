@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:flutter/rendering.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../models/book.dart';
 import '../../models/list_item.dart';
 import '../../services/database_helper.dart';
@@ -163,7 +164,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
   // lib/ui/screens/bible_reader_screen.dart
 
-  void _copySelectionWithReference() {
+  void _shareSelectionWithReference() {
     final selection = _selectedContent?.plainText;
     if (selection == null || selection.isEmpty) return;
 
@@ -281,12 +282,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
         involvedVerses.map((v) => '${v.verseNumber} ${v.content}').join(' ');
     final finalString = '"$copiedText"\n($reference)';
 
-    Clipboard.setData(ClipboardData(text: finalString));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Copiado com referência!')),
-      );
-    }
+    Share.share(finalString);
   }
 
   void _showBookChapterSelector() async {
@@ -353,17 +349,15 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                     contextMenuBuilder: (context, editableTextState) {
                       final List<ContextMenuButtonItem> buttonItems =
                           editableTextState.contextMenuButtonItems;
-                      buttonItems.removeWhere((item) =>
-                          item.type == ContextMenuButtonType.selectAll);
-
+                      buttonItems.clear();
                       buttonItems.insert(
                         1,
                         ContextMenuButtonItem(
                           onPressed: () {
-                            _copySelectionWithReference();
+                            _shareSelectionWithReference();
                             editableTextState.hideToolbar();
                           },
-                          label: 'Copiar com Referência',
+                          label: 'Compartilhar',
                         ),
                       );
 
