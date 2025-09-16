@@ -279,7 +279,7 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
     final copiedText =
         involvedVerses.map((v) => '${v.verseNumber} ${v.content}').join(' ');
-    final finalString = '$reference\n"$copiedText"';
+    final finalString = '"$copiedText"\n($reference)';
 
     Clipboard.setData(ClipboardData(text: finalString));
     if (mounted) {
@@ -329,9 +329,8 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 20),
-                  Text("Carregando toda a Bíblia...",
-                      style: TextStyle(fontSize: 16)),
-                  Text("(Isso pode levar alguns segundos na primeira vez)"),
+                  Text("Carregando...", style: TextStyle(fontSize: 16)),
+                  Text("(Isso pode levar alguns segundos)"),
                 ],
               ),
             );
@@ -343,42 +342,44 @@ class BibleReaderScreenState extends State<BibleReaderScreen> {
 
           return Stack(
             children: [
-              SelectionArea(
-                onSelectionChanged: (SelectedContent? content) {
-                  setState(() {
-                    _selectedContent = content;
-                  });
-                },
-                contextMenuBuilder: (context, editableTextState) {
-                  final List<ContextMenuButtonItem> buttonItems =
-                      editableTextState.contextMenuButtonItems;
-                  buttonItems.removeWhere(
-                      (item) => item.type == ContextMenuButtonType.selectAll);
+              Padding(
+                padding: const EdgeInsets.only(bottom: 80),
+                child: SelectionArea(
+                    onSelectionChanged: (SelectedContent? content) {
+                      setState(() {
+                        _selectedContent = content;
+                      });
+                    },
+                    contextMenuBuilder: (context, editableTextState) {
+                      final List<ContextMenuButtonItem> buttonItems =
+                          editableTextState.contextMenuButtonItems;
+                      buttonItems.removeWhere((item) =>
+                          item.type == ContextMenuButtonType.selectAll);
 
-                  buttonItems.insert(
-                    1,
-                    ContextMenuButtonItem(
-                      onPressed: () {
-                        _copySelectionWithReference();
-                        editableTextState.hideToolbar();
+                      buttonItems.insert(
+                        1,
+                        ContextMenuButtonItem(
+                          onPressed: () {
+                            _copySelectionWithReference();
+                            editableTextState.hideToolbar();
+                          },
+                          label: 'Copiar com Referência',
+                        ),
+                      );
+
+                      return AdaptiveTextSelectionToolbar.buttonItems(
+                        anchors: editableTextState.contextMenuAnchors,
+                        buttonItems: buttonItems,
+                      );
+                    },
+                    child: ScrollablePositionedList.builder(
+                      itemScrollController: _itemScrollController,
+                      itemPositionsListener: _itemPositionsListener,
+                      itemCount: _displayItems.length,
+                      itemBuilder: (context, index) {
+                        return _buildListItem(_displayItems[index]);
                       },
-                      label: 'Copiar com Referência',
-                    ),
-                  );
-
-                  return AdaptiveTextSelectionToolbar.buttonItems(
-                    anchors: editableTextState.contextMenuAnchors,
-                    buttonItems: buttonItems,
-                  );
-                },
-                child: ScrollablePositionedList.builder(
-                  itemScrollController: _itemScrollController,
-                  itemPositionsListener: _itemPositionsListener,
-                  itemCount: _displayItems.length,
-                  itemBuilder: (context, index) {
-                    return _buildListItem(_displayItems[index]);
-                  },
-                ),
+                    )),
               ),
               Positioned(
                 bottom: 0,

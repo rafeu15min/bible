@@ -13,7 +13,7 @@ class BibleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Leitor da Bíblia',
+      title: 'Bíblia',
       theme: ThemeData(
         primarySwatch: Colors.indigo,
         scaffoldBackgroundColor: const Color(0xFFF0F0F0),
